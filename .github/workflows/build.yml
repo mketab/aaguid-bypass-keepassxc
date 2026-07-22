@@ -1,0 +1,206 @@
+name: KeePassXC Dynamic AAGUID Overlay Build
+
+on:
+  schedule:
+    # Automatically check daily at 00:00 UTC for new upstream KeePassXC releases
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      keepassxc_ref:
+        description: 'KeePassXC Tag, Branch, or Commit SHA (leave empty for latest upstream release)'
+        required: false
+        default: ''
+      target_aaguid:
+        description: 'Target AAGUID (default: Apple iCloud Keychain AAGUID)'
+        required: true
+        default: 'dd4ec289-e01d-41c9-bb89-70fa845d4bf2'
+      old_aaguid:
+        description: 'Upstream KeePassXC Default AAGUID'
+        required: true
+        default: 'fdb141b2-5d84-443e-8a35-4698c205a502'
+      create_release:
+        description: 'Create a GitHub Release with artifacts'
+        type: boolean
+        default: true
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-upstream:
+    name: Check Upstream KeePassXC Release
+    runs-on: ubuntu-latest
+    outputs:
+      keepassxc_ref: ${{ steps.resolve.outputs.keepassxc_ref }}
+      target_tag: ${{ steps.resolve.outputs.target_tag }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+    steps:
+      - name: Resolve Target KeePassXC Release
+        id: resolve
+        run: |
+          INPUT_REF="${{ inputs.keepassxc_ref }}"
+          
+          if [ -n "$INPUT_REF" ]; then
+            KEEPASSXC_REF="$INPUT_REF"
+            echo "Using user-specified ref: $KEEPASSXC_REF"
+          else
+            echo "Fetching latest release tag from keepassxreboot/keepassxc..."
+            LATEST_TAG=$(curl -sSL -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/keepassxreboot/keepassxc/releases/latest | jq -r '.tag_name // empty')
+            
+            if [ -z "$LATEST_TAG" ]; then
+              echo "Failed to fetch latest release via API, using fallback tag 2.7.10"
+              LATEST_TAG="2.7.10"
+            fi
+            
+            KEEPASSXC_REF="${LATEST_TAG#v}"
+            echo "Resolved upstream release ref: $KEEPASSXC_REF"
+          fi
+
+          TARGET_TAG="v${KEEPASSXC_REF}-patched"
+          
+          # Check if this release tag already exists in current overlay repository
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TARGET_TAG}")
+            
+          echo "Release check for ${TARGET_TAG} returned HTTP ${HTTP_STATUS}"
+          
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$HTTP_STATUS" = "200" ]; then
+            echo "Release ${TARGET_TAG} already exists. Skipping build."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "keepassxc_ref=${KEEPASSXC_REF}" >> "$GITHUB_OUTPUT"
+          echo "target_tag=${TARGET_TAG}" >> "$GITHUB_OUTPUT"
+
+  patch-and-build:
+    name: Patch and Build KeePassXC (${{ needs.check-upstream.outputs.keepassxc_ref }})
+    needs: check-upstream
+    if: needs.check-upstream.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Overlay Repository
+        uses: actions/checkout@v5
+        with:
+          path: overlay-repo
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Checkout KeePassXC Upstream
+        uses: actions/checkout@v5
+        with:
+          repository: 'keepassxreboot/keepassxc'
+          ref: ${{ needs.check-upstream.outputs.keepassxc_ref }}
+          path: keepassxc-src
+          fetch-depth: 1
+
+      - name: Apply Dynamic AAGUID Replacement
+        run: |
+          TARGET_AAGUID="${{ inputs.target_aaguid || 'dd4ec289-e01d-41c9-bb89-70fa845d4bf2' }}"
+          OLD_AAGUID="${{ inputs.old_aaguid || 'fdb141b2-5d84-443e-8a35-4698c205a502' }}"
+          
+          echo "Applying dynamic AAGUID patch..."
+          python3 overlay-repo/scripts/patch_aaguid.py \
+            --src-dir keepassxc-src \
+            --old-aaguid "$OLD_AAGUID" \
+            --new-aaguid "$TARGET_AAGUID"
+
+      - name: Inspect Patched Changes
+        run: |
+          cd keepassxc-src
+          echo "=== Git Diff Summary ==="
+          git diff --stat
+          echo "=== Detailed Git Diff ==="
+          git diff
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            asciidoctor \
+            qttools5-dev-tools \
+            qttools5-dev \
+            qtbase5-dev \
+            qtbase5-private-dev \
+            libqt5svg5-dev \
+            libqt5x11extras5-dev \
+            libx11-dev \
+            libxtst-dev \
+            libxi-dev \
+            libxext-dev \
+            libminizip-dev \
+            libusb-1.0-0-dev \
+            libkeyutils-dev \
+            libgcrypt20-dev \
+            zlib1g-dev \
+            libbotan-2-dev \
+            libreadline-dev \
+            libpcsclite-dev \
+            libmicrohttpd-dev \
+            libargon2-dev \
+            libqrencode-dev
+
+      - name: Configure CMake
+        run: |
+          mkdir keepassxc-src/build
+          cd keepassxc-src/build
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWITH_TESTS=ON \
+            -DWITH_XC_ALL=ON \
+            -DWITH_XC_UPDATECHECK=OFF \
+            ..
+
+      - name: Compile KeePassXC
+        run: |
+          cd keepassxc-src/build
+          ninja -j$(nproc)
+
+      - name: Package Binary Artifacts
+        run: |
+          cd keepassxc-src/build
+          mkdir -p ../../dist
+          cp src/keepassxc ../../dist/keepassxc-custom-aaguid
+          tar -czvf ../../dist/keepassxc-custom-aaguid-linux-x64.tar.gz -C src keepassxc
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: keepassxc-custom-aaguid-linux-x64
+          path: dist/keepassxc-custom-aaguid-linux-x64.tar.gz
+
+      - name: Create Release
+        if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.create_release == true)) && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ needs.check-upstream.outputs.target_tag }}"
+          name: "KeePassXC ${{ needs.check-upstream.outputs.keepassxc_ref }} (Custom AAGUID: ${{ inputs.target_aaguid || 'dd4ec289-e01d-41c9-bb89-70fa845d4bf2' }})"
+          body: |
+            Custom KeePassXC build with dynamically patched FIDO2/WebAuthn AAGUID.
+            - **Base Ref**: `${{ needs.check-upstream.outputs.keepassxc_ref }}`
+            - **Target AAGUID**: `${{ inputs.target_aaguid || 'dd4ec289-e01d-41c9-bb89-70fa845d4bf2' }}`
+            - **Upstream AAGUID**: `${{ inputs.old_aaguid || 'fdb141b2-5d84-443e-8a35-4698c205a502' }}`
+          files: |
+            dist/keepassxc-custom-aaguid-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
