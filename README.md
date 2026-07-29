@@ -20,3 +20,10 @@ Inspired by this issue: [secure.chase.com can't save passkeys](https://github.co
 ```bash
 uv run scripts/patch_aaguid.py --src-dir /path/to/keepassxc-source --new-aaguid dd4ec289-e01d-41c9-bb89-70fa845d4bf2 [or any other "blessed" UUID]
 ```
+
+## FAQ
+
+> Do I need to replace my main KeePassXC installation with this patched version?
+
+No. You only need to use this binary when registering a new passkey.
+Most services only verify the AAGUID during initial setup, not during subsequent logins. Once registered, your passkeys will work normally with standard KeePassXC.
