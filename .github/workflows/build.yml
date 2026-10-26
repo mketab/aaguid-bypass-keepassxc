@@ -152,7 +152,7 @@ jobs:
             libkeyutils-dev \
             libgcrypt20-dev \
             zlib1g-dev \
-            libbotan-2-dev \
+            libbotan-3-dev \
             libreadline-dev \
             libpcsclite-dev \
             libmicrohttpd-dev \
