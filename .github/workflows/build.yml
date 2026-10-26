@@ -57,8 +57,8 @@ jobs:
               https://api.github.com/repos/keepassxreboot/keepassxc/releases/latest | jq -r '.tag_name // empty')
             
             if [ -z "$LATEST_TAG" ]; then
-              echo "Failed to fetch latest release via API, using fallback tag 2.7.10"
-              LATEST_TAG="2.7.10"
+              echo "Failed to fetch latest release via API, using fallback tag 2.8.0"
+              LATEST_TAG="2.8.0"
             fi
             
             KEEPASSXC_REF="${LATEST_TAG#v}"
@@ -138,12 +138,11 @@ jobs:
             ninja-build \
             pkg-config \
             asciidoctor \
-            qttools5-dev-tools \
-            qttools5-dev \
-            qtbase5-dev \
-            qtbase5-private-dev \
-            libqt5svg5-dev \
-            libqt5x11extras5-dev \
+            qt6-tools-dev-tools \
+            qt6-tools-dev \
+            qt6-base-dev \
+            qt6-base-private-dev \
+            libqt6svg6-dev \
             libx11-dev \
             libxtst-dev \
             libxi-dev \
@@ -167,8 +166,7 @@ jobs:
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DWITH_TESTS=ON \
-            -DWITH_XC_ALL=ON \
-            -DWITH_XC_UPDATECHECK=OFF \
+            -DKPXC_FEATURE_UPDATES=OFF \
             ..
 
       - name: Compile KeePassXC
